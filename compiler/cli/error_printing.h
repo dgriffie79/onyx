@@ -122,15 +122,27 @@ static void print_detailed_message_v2(onyx_error_details_t* err, b32 colored_pri
 }
 
 static void print_detailed_message_json(onyx_error_details_t* err, b32 colored_printing) {
-    bh_printf(
-        "{\"rank\":%d,\"file\":\"%s\",\"line\":%d,\"column\":%d,\"length\":%d,\"msg\":\"%s\"}",
-        err->rank,
-        err->filename,
-        err->line,
-        err->column,
-        err->length,
-        err->message
-    );
+    bh_printf("{\"rank\":%d,\"file\":\"", err->rank);
+
+    const char* filename = err->filename;
+    const char* start = filename;
+
+    while (*filename) {
+        if (*filename == '\\') {
+            if (filename > start) {
+                bh_printf("%b\\\\", start, (int)(filename - start));
+            }
+            start = filename + 1;
+        }
+        filename++;
+    }
+
+    if (filename > start) {
+        bh_printf("%b", start, (int)(filename - start));
+    }
+
+    bh_printf("\",\"line\":%d,\"column\":%d,\"length\":%d,\"msg\":\"%s\"}",
+              err->line, err->column, err->length, err->message);
 }
 
 static void print_detailed_message(onyx_error_details_t* err, b32 colored_printing, char *error_format) {
