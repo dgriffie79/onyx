@@ -36,6 +36,17 @@ Set.make :: ($T: type_expr, allocator := context.allocator) -> Set(T) {
     return set;
 }
 
+Set.from :: (arr: [] $T, allocator := context.allocator) -> Set(T) {
+    set : Set(T)
+    Set.init(&set, allocator=allocator)
+
+    for a in arr {
+        Set.insert(&set, a)
+    }
+
+    return set
+}
+
 #overload
 builtin.__make_overload :: macro (x: &Set, allocator: Allocator) =>
     #this_package.Set.make(x.Elem_Type, allocator = allocator);
@@ -134,6 +145,39 @@ Set.as_iter :: (s: &Set) =>
             }
             return .None;
         });
+
+/// Allows for looping over a Set with a for-loop
+#overload
+__for_expansion :: macro (set: Set($T), $flags: __For_Expansion_Flags, $body: Code) where (body.capture_count == 1) {
+    s      := set
+    s_data := s.entries.data
+    s_len  := s.entries.length
+    i := 0
+    while i < s_len {
+        defer i += 1
+
+        #if flags & .BY_POINTER {
+            #unquote body(&s_data[i].value) #skip_scope(2)
+        } else {
+            #unquote body(s_data[i].value) #skip_scope(2)
+        }
+    }
+}
+
+#overload
+__for_expansion :: macro (set: &Set($T), $flags: __For_Expansion_Flags, $body: Code) where (body.capture_count == 1) {
+    s := set
+    i := 0
+    while i < s.entries.length {
+        defer i += 1
+
+        #if flags & .BY_POINTER {
+            #unquote body(&s.entries[i].value) #skip_scope(2)
+        } else {
+            #unquote body(s.entries[i].value) #skip_scope(2)
+        }
+    }
+}
 
 //
 // Private symbols

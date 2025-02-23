@@ -588,9 +588,6 @@ b32 convert_numlit_to_type(Context *context, AstNumLit* num, Type* to_type, b32 
     return 0;
 }
 
-// TODO: This function should be able return a "yield" condition. There
-// are a couple cases that need to yield in order to be correct, like
-// polymorphic functions with a typeof for the return type.
 TypeMatch unify_node_and_type_(Context *context, AstTyped** pnode, Type* type, b32 permanent) {
     AstTyped* node = *pnode;
     if (type == NULL) return TYPE_MATCH_FAILED;
@@ -773,14 +770,13 @@ TypeMatch unify_node_and_type_(Context *context, AstTyped** pnode, Type* type, b
     // node does not match the given type:
     //
     // If the nodes type is a function type and that function has an automatic return
-    // value placeholder, fill in that placeholder with the actual type.
+    // value placeholder, wait for the return type to be solved by the function first.
     // :AutoReturnType
     if (node_type && node_type->kind == Type_Kind_Function
         && node_type->Function.return_type == context->types.auto_return
         && type->kind == Type_Kind_Function) {
 
-        node_type->Function.return_type = type->Function.return_type;
-        return TYPE_MATCH_SUCCESS;
+        return TYPE_MATCH_YIELD;
     }
 
     // If the node is an auto cast (~~) node, then check to see if the cast is legal
@@ -1555,7 +1551,7 @@ TypeMatch implicit_cast_to_bool(Context *context, AstTyped **pnode) {
     return TYPE_MATCH_YIELD;
 }
 
-static char *sanitize_name(bh_allocator a, const char *name) {
+static char *sanitize_name(bh_allocator a, char *name) {
     if (!name) return name;
 
     char *sanitized = bh_strdup(a, name); 
@@ -1599,7 +1595,7 @@ char* get_function_assembly_name(Context *context, AstFunction* func) {
     if (func->token) {
         return bh_aprintf(context->ast_alloc,
             "unnamed_at_%s_%d",
-            sanitize_name(context->scratch_alloc, func->token->pos.filename),
+            sanitize_name(context->scratch_alloc, (char *) func->token->pos.filename),
             func->token->pos.line);
     }
 
@@ -1950,6 +1946,61 @@ void insert_auto_dispose_call(Context *context, AstLocal *local) {
     defered->next = *insertion_point;
     *insertion_point = (AstNode *) defered;
 }
+
+
+AstCall * create_implicit_for_expansion_call(Context *context, AstFor *fornode) {
+    AstCall *call = onyx_ast_node_new(context->ast_alloc, sizeof(AstCall), Ast_Kind_Call);
+    call->token = fornode->token;
+    call->callee = (AstTyped *) context->builtins.for_expansion;
+    call->next = fornode->next;
+
+    arguments_initialize(context, &call->args);
+
+    //
+    // Create the code block that will represent the body of the for-loop.
+    // This code block is given up to 2 inputs, depending on if the index variable
+    // was set in the for-loop. The implementer of a __for_expansion overload must
+    // always provide 2 values when `#unquote`-ing, as they cannot currently know if
+    // the index variable was asked for.
+    //
+    // Maybe we could pass `void` as the `index_type` if the index variable is not necessary?
+    // I would like to keep the implementations of __for_expansion simple and easy
+    // to read, but sometimes there are extra complications you cannot avoid...
+    //
+    AstCodeBlock *body_code_block = onyx_ast_node_new(context->ast_alloc, sizeof(AstCodeBlock), Ast_Kind_Code_Block);
+    body_code_block->token = fornode->token;
+    body_code_block->type_node = context->builtins.code_type;
+    body_code_block->code = (AstNode *) fornode->stmt;
+    ((AstBlock *) body_code_block->code)->rules = Block_Rule_Code_Block;
+
+    bh_arr_new(context->ast_alloc, body_code_block->binding_symbols, bh_arr_length(fornode->indexing_variables));
+    bh_arr_each(AstLocal *, indexing_variable, fornode->indexing_variables) {
+        CodeBlockBindingSymbol sym;
+        sym.symbol    = (*indexing_variable)->token;
+        sym.type_node = (*indexing_variable)->type_node;
+        bh_arr_push(body_code_block->binding_symbols, sym);
+    }
+
+    i32 flags = 0;
+    if (fornode->by_pointer) flags |= 1; // BY_POINTER
+    if (fornode->no_close)   flags |= 2; // NO_CLOSE
+    
+    AstNumLit *flag_node = make_int_literal(context, flags);
+    flag_node->type_node = context->builtins.for_expansion_flag_type;
+    // flag_node->type = type_build_from_ast(context, context->builtins.for_expansion_flag_type);
+    // assert(flag_node->type);
+
+    // Arguments are: 
+    //    Iterator
+    //    Code block with 2 inputs (value, index)
+    //    Flags
+    bh_arr_push(call->args.values, (AstTyped *) make_argument(context, (AstTyped *) fornode->iter));
+    bh_arr_push(call->args.values, (AstTyped *) make_argument(context, (AstTyped *) flag_node));
+    bh_arr_push(call->args.values, (AstTyped *) make_argument(context, (AstTyped *) body_code_block));
+
+    return call;
+}
+
 
 
 b32 resolve_intrinsic_interface_constraint(Context *context, AstConstraint *constraint) {
