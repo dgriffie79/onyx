@@ -284,8 +284,6 @@ typedef enum AstFlags {
     Ast_Flag_Address_Taken         = BH_BIT(7),
 
     // Type flags
-    Ast_Flag_Type_Is_Resolved      = BH_BIT(8),
-
     Ast_Flag_No_Clone              = BH_BIT(9),
 
     Ast_Flag_Cannot_Take_Addr      = BH_BIT(10),
@@ -327,7 +325,7 @@ typedef enum AstFlags {
 
     Ast_Flag_Constraint_Is_Expression = BH_BIT(28),
 
-    Ast_Flag_Has_Been_Scheduled_For_Emit = BH_BIT(29)
+    Ast_Flag_Has_Been_Scheduled_For_Emit = BH_BIT(29),
 } AstFlags;
 
 typedef enum UnaryOp {
@@ -868,9 +866,7 @@ struct AstFor           {
     // NOTE: Stores the iteration variable
     Scope *scope;
 
-    // NOTE: Local defining the iteration variable
-    AstLocal* var;
-    AstLocal* index_var;
+    bh_arr(AstLocal *) indexing_variables;
 
     // NOTE: This can be any expression, but it is checked that
     // it is of a type that we know how to iterate over.
@@ -879,16 +875,18 @@ struct AstFor           {
 
     AstBlock *stmt;
 
+    // NOTE: This is set when a for-loop isn't over a primitive type
+    // and instead is over a custom type, such as `Iterator` or `Map`.
+    // To properly invoke `__for_expansion`, we need to store the prepared
+    // call, as there could be overloads we have to wait for by yielding.
+    AstCall *intermediate_macro_expansion;
+
     // ROBUSTNESS: This should be able to be set by a compile time variable at some point.
     // But for now, this will do.
     b32 by_pointer : 1;
     b32 no_close   : 1;
-    b32 has_first  : 1;
-
-    // NOTE: This is used by the AstDirectiveFirst node for this
-    // for node to know which local variable to use.
-    u64 first_local;
 };
+
 struct AstIfWhile {
     AstNode_base;
 
@@ -909,7 +907,14 @@ struct AstIfWhile {
         };
 
         // Used by While
-        b32 bottom_test;
+        struct {
+            // NOTE: This is used by the AstDirectiveFirst node for this
+            // for node to know which local variable to use.
+            u64 first_local;
+            b32 has_first;
+
+            b32 bottom_test;
+        };
     };
 };
 typedef struct AstIfWhile AstIf;
@@ -1489,6 +1494,7 @@ struct AstFunction {
     b32 is_intrinsic       : 1;
 
     b32 named_return_locals_added : 1;
+    b32 ready_for_body_to_be_checked : 1;
 };
 
 struct AstCaptureBlock {
@@ -1521,7 +1527,6 @@ struct AstPolyQuery {
     AstFunction *function_header;
 
     b32 error_on_fail : 1;     // Whether or not to report errors on failing to match.
-    b32 successful_symres : 1; // If something successful happened in symbol resolution
 };
 
 
@@ -1574,7 +1579,8 @@ struct AstDirectiveRemove {
 
 struct AstDirectiveFirst {
     AstTyped_base;
-    AstFor *for_node;
+
+    AstIfWhile *while_node;
 };
 
 struct AstDirectiveExportName {
@@ -1609,12 +1615,17 @@ struct AstCallSite {
     b32 collapsed : 1;
 };
 
+typedef struct CodeBlockBindingSymbol {
+    OnyxToken *symbol;
+    AstType   *type_node; // This can be NULL if no type was given.
+} CodeBlockBindingSymbol;
+
 // Represents a "pastable" block of code.
 struct AstCodeBlock {
     AstTyped_base;
 
     AstNode *code;
-    bh_arr(OnyxToken *) binding_symbols;
+    bh_arr(CodeBlockBindingSymbol) binding_symbols;
 
     b32 is_expression: 1;
 };
@@ -1624,6 +1635,9 @@ struct AstDirectiveInsert {
 
     AstTyped *code_expr;
     bh_arr(AstTyped *) binding_exprs;
+
+    // Set when using #skip_scope
+    AstTyped *skip_scope_index;
 };
 
 struct AstDirectiveInit {
@@ -1844,7 +1858,6 @@ void entity_heap_add_job(EntityHeap *entities, enum TypeMatch (*func)(Context *,
 // If target_arr is null, the entities will be placed directly in the heap.
 void add_entities_for_node(EntityHeap *entities, bh_arr(Entity *)* target_arr, AstNode* node, Scope* scope, Package* package);
 
-void symres_entity(Context *context, Entity* ent);
 void check_entity(Context *context, Entity* ent);
 void emit_entity(Context *context, Entity* ent);
 
@@ -1915,12 +1928,16 @@ typedef struct OnyxDocInfo {
     u32 next_file_id;
 } OnyxDocInfo;
 
+typedef enum CheckerMode {
+    CM_Dont_Resolve_Symbols    = BH_BIT(1),
+    CM_Dont_Check_Case_Bodies  = BH_BIT(2),
+    CM_Allow_Init_Expressions  = BH_BIT(3),
+} CheckerMode;
 
 typedef struct CheckerData {
     b32 expression_types_must_be_known;
     b32 all_checks_are_final;
-    b32 inside_for_iterator;
-    bh_arr(AstFor *) for_node_stack;
+    bh_arr(AstIfWhile *) while_node_stack;
     bh_imap __binop_impossible_cache[Binary_Op_Count];
     AstCall __op_maybe_overloaded;
     Entity *current_entity;
@@ -1928,9 +1945,11 @@ typedef struct CheckerData {
     bh_arr(bh_arr(AstLocal *)) named_return_values_stack;
 
     u32 current_checking_level;
+    CheckerMode mode;
 
     Scope *current_scope;
-    b32 report_unresolved_symbols;
+    bh_arr(Scope *) scope_stack;
+
     b32 resolved_a_symbol;
 } CheckerData;
 
@@ -2105,6 +2124,9 @@ struct CompilerBuiltins {
     bh_arr(AstFunction *) init_procedures;
     AstOverloadedFunction *implicit_bool_cast;
     AstOverloadedFunction *dispose_used_local;
+
+    AstType *for_expansion_flag_type;
+    AstOverloadedFunction *for_expansion;
 };
 
 typedef struct TypeStore TypeStore;
@@ -2356,6 +2378,8 @@ b32 potentially_convert_function_to_polyproc(Context *context, AstFunction *func
 AstPolyCallType* convert_call_to_polycall(Context *context, AstCall* call);
 
 void insert_auto_dispose_call(Context *context, AstLocal *local);
+
+AstCall * create_implicit_for_expansion_call(Context *context, AstFor *fornode);
 
 typedef struct OverloadReturnTypeCheck {
     Type *expected_type;

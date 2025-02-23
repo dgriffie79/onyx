@@ -80,7 +80,7 @@ void package_reinsert_use_packages(Context *context, Package* package) {
     if (!package->use_package_entities) return;
 
     bh_arr_each(Entity *, use_package, package->use_package_entities) {
-        (*use_package)->state = Entity_State_Resolve_Symbols;
+        (*use_package)->state = Entity_State_Check_Types;
         (*use_package)->macro_attempts = 0;
         entity_heap_insert_existing(&context->entities, *use_package);
     } 
@@ -373,6 +373,24 @@ all_types_peeled_off:
             bh_arr_each(AstProceduralMacro *, pmac, ext->proc_macros) {
                 if (token_text_equals((*pmac)->token, symbol)) {
                     return (AstNode *) *pmac;
+                }
+            }
+
+            return NULL;
+        }
+
+        case Ast_Kind_Code_Block: {
+            AstCodeBlock *block = (AstCodeBlock *) node;
+
+            if (!strcmp(symbol, "capture_count")) {
+                return (AstNode *) make_int_literal(context, bh_arr_length(block->binding_symbols));
+            }
+
+            if (bh_str_starts_with(symbol, "capture_type_")) {
+                char *num = symbol + 13; // go past the "capture_type_"
+                int idx = atoi(num); // TODO: Remove use of atoi here...
+                if (idx != 0 && idx <= bh_arr_length(block->binding_symbols)) {
+                    return (AstNode *) block->binding_symbols[idx - 1].type_node;
                 }
             }
 
@@ -883,7 +901,7 @@ void expand_macro(Context *context, AstCall** pcall, AstFunction* template) {
         scope_include(context, argument_scope, template->poly_scope, call->token->pos);
 
     if (bh_arr_length(nodes_that_need_entities) > 0) {
-        // :CopyPaste from symres_function
+        // :CopyPaste from check_function
         bh_arr_each(AstNode *, node, nodes_that_need_entities) {
             // This makes a lot of assumptions about how these nodes are being processed,
             // and I don't want to start using this with other nodes without considering

@@ -133,6 +133,8 @@ void onyx_context_free(onyx_context_t *ctx) {
     bh_arr_free(context->scopes);
     bh_scratch_free(&context->scratch);
     bh_managed_heap_free(&context->heap);
+
+    free(ctx);
 }
 
 void onyx_options_ready(onyx_context_t *ctx) {
@@ -374,9 +376,9 @@ static b32 process_entity(Context *context, Entity* ent) {
             break;
 
         case Entity_State_Introduce_Symbols:
-            // Currently, introducing symbols is handled in the symbol resolution
+            // Currently, introducing symbols is handled in the checker
             // function. Maybe there should be a different place where that happens?
-            symres_entity(context, ent);
+            check_entity(context, ent);
             break;
 
         case Entity_State_Parse:
@@ -409,7 +411,6 @@ static b32 process_entity(Context *context, Entity* ent) {
             }
             break;
 
-        case Entity_State_Resolve_Symbols: symres_entity(context, ent); break;
         case Entity_State_Check_Types:     check_entity(context, ent);  break;
         case Entity_State_Code_Gen:        emit_entity(context, ent);   break;
 
@@ -487,7 +488,7 @@ onyx_pump_t onyx_pump(onyx_context_t *ctx) {
     // cycle detection algorithm must be used.
     //
     if (!changed) {
-        if (!context->watermarked_node) {
+        if (!context->watermarked_node || context->watermarked_node->macro_attempts < ent->macro_attempts) {
             context->watermarked_node = ent;
             context->highest_watermark = bh_max(context->highest_watermark, ent->macro_attempts);
         }
@@ -505,10 +506,6 @@ onyx_pump_t onyx_pump(onyx_context_t *ctx) {
 
                 context->cycle_almost_detected += 1;
             }
-        }
-        else if (context->watermarked_node->macro_attempts < ent->macro_attempts) {
-            context->watermarked_node = ent;
-            context->highest_watermark = bh_max(context->highest_watermark, ent->macro_attempts);
         }
     } else {
         context->watermarked_node = NULL;
@@ -542,14 +539,14 @@ int32_t onyx_event_count(onyx_context_t *ctx) {
 }
 
 onyx_event_type_t onyx_event_type(onyx_context_t *ctx, int event_idx) {
-    if (event_idx >= ctx->context.events.event_count) return ONYX_EVENT_UNKWOWN;
+    if (event_idx >= ctx->context.events.event_count) return ONYX_EVENT_UNKNOWN;
 
     CompilerEvent *ev = ctx->context.events.first;
     while (event_idx-- > 0 && ev) {
         ev = ev->next;
     }
 
-    if (!ev) return ONYX_EVENT_UNKWOWN;
+    if (!ev) return ONYX_EVENT_UNKNOWN;
 
     return (onyx_event_type_t) ev->type;
 }
