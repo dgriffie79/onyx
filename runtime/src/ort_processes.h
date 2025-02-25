@@ -221,7 +221,7 @@ ONYX_DEF(__process_spawn, (WASM_I32, WASM_I32, WASM_I32, WASM_I32, WASM_I32, WAS
             working_dir = starting_dir;
         }
 
-        success = CreateProcessA(NULL, cmdLine, &saAttr, &saAttr, 1, 0, env, working_dir, &startup, &process->proc_info);
+        success = CreateProcessA(NULL, cmdLine, &saAttr, &saAttr, 1, 0x08000000, env, working_dir, &startup, &process->proc_info);
         if (!success) {
             wasm_val_init_ptr(&results->data[0], NULL); // Failed to run @LEAK
             return NULL;
